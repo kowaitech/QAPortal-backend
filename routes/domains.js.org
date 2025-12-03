@@ -1,0 +1,184 @@
+import express from 'express';
+import Domain from '../models/Domain.js';
+import Question from '../models/Question.js';
+import StudentAnswer from '../models/StudentAnswer.js';
+import { auth, requireRole } from '../middleware/auth.js';
+
+const router = express.Router();
+// List domains; supports ?createdBy=staff to only show staff-created
+router.get('/', auth, async (req, res) => {
+  try {
+    const { createdBy } = req.query;
+    let query = {};
+    if (createdBy === 'staff') {
+      // only domains whose creator has role 'staff'
+      query = { };
+      const docs = await Domain.find(query).populate('createdBy', 'role');
+      const staffDomains = docs.filter(d => d.createdBy && d.createdBy.role === 'staff')
+                               .map(d => ({ _id: d._id, name: d.name }));
+      return res.json(staffDomains);
+    }
+    const all = await Domain.find({}).select('_id name');
+    res.json(all);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
+// Create domain (staff only)
+router.post('/', auth, requireRole('staff'), async (req, res) => {
+  try {
+    const { name } = req.body;
+    if(!name) return res.status(400).json({ message: 'Name required' });
+    const existing = await Domain.findOne({ name: name.trim() });
+    if(existing) return res.status(400).json({ message: 'Domain exists' });
+    const dom = await Domain.create({ name: name.trim(), createdBy: req.user._id });
+    res.json({ domain: dom });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// List all domains (unified endpoint)
+router.get('/', auth, async (req, res) => {
+  try {
+    const domains = await Domain.find()
+      .populate('createdBy', 'name email')
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    // Add question counts for each domain
+    const domainsWithCounts = await Promise.all(domains.map(async (domain) => {
+      const sectionACounts = await Question.countDocuments({ 
+        domain: domain._id, 
+        section: 'A', 
+        isActive: true 
+      });
+      const sectionBCounts = await Question.countDocuments({ 
+        domain: domain._id, 
+        section: 'B', 
+        isActive: true 
+      });
+      
+      return {
+        ...domain,
+        questionCounts: {
+          sectionA: sectionACounts,
+          sectionB: sectionBCounts
+        },
+        canEdit: req.user.role === 'staff' && domain.createdBy._id.toString() === req.user._id.toString()
+      };
+    }));
+    
+    res.json({ domains: domainsWithCounts });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Get domain details with questions
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const domain = await Domain.findById(req.params.id)
+      .populate('createdBy', 'name email');
+    
+    if (!domain) return res.status(404).json({ message: 'Domain not found' });
+    
+    const questions = await Question.find({ 
+      domain: req.params.id, 
+      isActive: true 
+    }).sort({ section: 1, createdAt: 1 });
+    
+    res.json({ domain, questions });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Get student answers for a domain (staff only)
+router.get('/:id/answers', auth, requireRole('staff'), async (req, res) => {
+  try {
+    const domain = await Domain.findById(req.params.id);
+    if (!domain) return res.status(404).json({ message: 'Domain not found' });
+    
+    const answers = await StudentAnswer.find({ domain: req.params.id })
+      .populate('student', 'name email')
+      .populate('question', 'title section')
+      .sort({ submittedAt: -1 })
+      .lean();
+    
+    // Group answers by student and section
+    const groupedAnswers = {};
+    answers.forEach(answer => {
+      const studentId = answer.student._id.toString();
+      const section = answer.section;
+      
+      if (!groupedAnswers[studentId]) {
+        groupedAnswers[studentId] = {
+          student: answer.student,
+          sections: { A: [], B: [] }
+        };
+      }
+      
+      groupedAnswers[studentId].sections[section].push(answer);
+    });
+    
+    res.json({ answers: Object.values(groupedAnswers) });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Update domain (only by creator)
+router.put('/:id', auth, requireRole('staff'), async (req, res) => {
+  try {
+    const { name } = req.body;
+    const domain = await Domain.findById(req.params.id);
+    
+    if (!domain) return res.status(404).json({ message: 'Domain not found' });
+    
+    // Check if user is the creator
+    if (domain.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Can only edit domains you created' });
+    }
+    
+    if (name) {
+      const existing = await Domain.findOne({ 
+        name: name.trim(), 
+        _id: { $ne: req.params.id } 
+      });
+      if (existing) return res.status(400).json({ message: 'Domain name already exists' });
+      domain.name = name.trim();
+    }
+    
+    await domain.save();
+    res.json({ domain });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+// Delete domain (only by creator)
+router.delete('/:id', auth, requireRole('staff'), async (req, res) => {
+  try {
+    const domain = await Domain.findById(req.params.id);
+    if (!domain) return res.status(404).json({ message: 'Domain not found' });
+    
+    // Check if user is the creator
+    if (domain.createdBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'Can only delete domains you created' });
+    }
+    
+    // Delete associated questions and answers
+    await Question.deleteMany({ domain: req.params.id });
+    await StudentAnswer.deleteMany({ domain: req.params.id });
+    await Domain.findByIdAndDelete(req.params.id);
+    
+    res.json({ message: 'Domain deleted successfully' });
+  } catch(e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+export default router;

@@ -1,0 +1,113 @@
+
+import express from 'express';
+import Test from '../models/Test.js';
+import StudentTest from '../models/StudentTest.js';
+import Question from '../models/Question.js';
+import Domain from '../models/Domain.js';
+import { auth, requireRole } from '../middleware/auth.js';
+
+const router = express.Router();
+
+function computeStatus(t) {
+  const now = Date.now();
+  if (now < new Date(t.startDate).getTime()) return 'inactive';
+  if (now > new Date(t.endDate).getTime()) return 'finished';
+  return 'active';
+}
+
+// Admin create test
+router.post('/admin', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { title, domainIds = [], startDate, endDate, durationMinutes = 60, sections = ['A','B'], eligibleStudents = [] } = req.body;
+    if (!title || !startDate || !endDate) return res.status(400).json({ message: 'title, startDate, endDate required' });
+    const test = await Test.create({
+      title,
+      domains: domainIds,
+      startDate: new Date(startDate),
+      endDate: new Date(endDate),
+      durationMinutes,
+      sections,
+      eligibleStudents,
+      status: 'inactive'
+    });
+    res.status(201).json(test);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to create test' });
+  }
+});
+
+// List all tests (admin)
+router.get('/list', auth, requireRole('admin'), async (req, res) => {
+  const tests = await Test.find().populate('domains','name').lean();
+  res.json(tests);
+});
+
+// Student: list categorized
+router.get('/student', auth, requireRole('student'), async (req, res) => {
+  const now = new Date();
+  const tests = await Test.find({ eligibleStudents: req.user._id }).populate('domains','name').lean();
+  const withStatus = tests.map(t => ({ ...t, status: computeStatus(t) }));
+  const upcoming = withStatus.filter(t => t.status === 'inactive');
+  const active = withStatus.filter(t => t.status === 'active');
+  const finished = withStatus.filter(t => t.status === 'finished');
+  res.json({ upcoming, active, finished });
+});
+
+// Get test by id (populate domains)
+router.get('/:id', auth, async (req, res) => {
+  const t = await Test.findById(req.params.id).populate('domains','name').lean();
+  if (!t) return res.status(404).json({ message: 'Not found' });
+  return res.json({ ...t, status: computeStatus(t) });
+});
+
+// Student start test
+router.post('/:id/start', auth, requireRole('student'), async (req, res) => {
+  try {
+    const { domainId, section } = req.body;
+    const test = await Test.findById(req.params.id).lean();
+    if (!test) return res.status(404).json({ message: 'Test not found' });
+    const status = computeStatus(test);
+    if (status !== 'active') return res.status(400).json({ message: 'Test is not active' });
+    if (!test.domains.map(String).includes(String(domainId))) return res.status(400).json({ message: 'Domain not in this test' });
+    if (test.sections && !test.sections.includes(section)) return res.status(400).json({ message: 'Invalid section' });
+    const start = new Date();
+    const due = new Date(start.getTime() + (test.durationMinutes || 60) * 60000);
+
+    const st = await StudentTest.findOneAndUpdate(
+      { student: req.user._id, test: test._id },
+      { $set: { startTime: start, dueTime: due, status: 'in-progress', selectedDomain: domainId, selectedSection: section } },
+      { upsert: true, new: true }
+    );
+
+    // Fetch questions for chosen domain+section
+    const qFilter = { domain: domainId };
+    if (Question.schema.paths.section) qFilter.section = section;
+    const questions = await Question.find(qFilter).select('title description domain section options type').lean();
+
+    res.json({ studentTest: st, questions, dueTime: due });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to start test' });
+  }
+});
+
+// Student submit
+router.post('/:id/submit', auth, requireRole('student'), async (req, res) => {
+  try {
+    const st = await StudentTest.findOne({ student: req.user._id, test: req.params.id });
+    if (!st) return res.status(404).json({ message: 'Not started' });
+    const now = new Date();
+    const expired = st.dueTime && now > st.dueTime;
+    st.endTime = now;
+    st.status = expired ? 'expired' : 'completed';
+    await st.save();
+    res.json({ ok: true, status: st.status });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ message: 'Failed to submit' });
+  }
+});
+
+
+export default router;

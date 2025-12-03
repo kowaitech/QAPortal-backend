@@ -1,0 +1,12 @@
+import mongoose from "mongoose";
+
+const TestSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  domains: [{ type: String, required: true }],
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true },
+  status: { type: String, enum: ["inactive", "active", "finished"], default: "inactive" },
+  eligibleStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+}, { timestamps: true });
+
+export default mongoose.model("Test", TestSchema);
