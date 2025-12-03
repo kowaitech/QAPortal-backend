@@ -23,22 +23,44 @@ const app = express();
 // Trust proxy when behind a proxy (set via env if needed)
 if (process.env.TRUST_PROXY === "true") app.set("trust proxy", true);
 
-// ✅ CORS first
-app.use(
-  cors({
-    origin: [
+// ✅ CORS first - must be before other middleware
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
       process.env.CLIENT_ORIGIN || "http://localhost:5173",
       "https://qaportal-1.onrender.com",
       "https://qaportal.onrender.com",
       "https://qaportal-backend-iyjk.onrender.com",
       "https://qa-portal-puce.vercel.app",
-    ],
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-    exposedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+    ];
+
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all origins for now, or use: callback(new Error('Not allowed by CORS'))
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+  exposedHeaders: ["Content-Type", "Authorization"],
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options("*", cors(corsOptions));
 
 // ✅ Helmet after cors
 app.use(
