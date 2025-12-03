@@ -185,7 +185,7 @@ app.get("/healthz/db", async (req, res) => {
 });
 
 // Start server with proper startup/shutdown handling
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 let server;
 
 const startServer = async () => {

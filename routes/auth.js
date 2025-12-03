@@ -168,7 +168,6 @@ router.post("/register", async (req, res) => {
         });
     }
 
-    const hash = await bcrypt.hash(password, 10);
     const validRole = (role || "").trim().toLowerCase() || "student";
 
     // Validate role
@@ -185,10 +184,11 @@ router.post("/register", async (req, res) => {
 
     const autoActive = validRole === "student";
 
+    // Let the User model's pre-save hook handle password hashing
     const user = await User.create({
       name: normalizedName,
       email: normalizedEmail,
-      password: hash,
+      password: password, // Pass plain password - model will hash it
       role: validRole,
       isActive: autoActive,
       collegeName: collegeName?.trim?.() || undefined,
@@ -702,8 +702,8 @@ router.post("/reset-password", async (req, res) => {
         .json({ message: "OTP has expired. Please request a new one." });
     }
 
-    const hash = await bcrypt.hash(newPassword, 10);
-    user.password = hash;
+    // Let the User model's pre-save hook handle password hashing
+    user.password = newPassword; // Pass plain password - model will hash it
     user.resetOtpCode = undefined;
     user.resetOtpExpires = undefined;
     await user.save();
