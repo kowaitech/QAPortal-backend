@@ -29,9 +29,14 @@ app.use(
     origin: [
       process.env.CLIENT_ORIGIN || "http://localhost:5173",
       "https://qaportal-1.onrender.com",
+      "https://qaportal.onrender.com",
+      "https://qaportal-backend-iyjk.onrender.com",
       "https://qa-portal-puce.vercel.app",
     ],
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    exposedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
