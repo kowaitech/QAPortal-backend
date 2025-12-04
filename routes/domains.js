@@ -122,20 +122,32 @@ router.get("/", auth, async (req, res) => {
     const domainIds = domains.map((d) => d._id);
     let counts = [];
     if (domainIds.length) {
-      counts = await Question.aggregate([
-        {
-          $match: {
-            domain: { $in: domainIds.map((id) => mongoose.Types.ObjectId(id)) },
-            isActive: true,
+      try {
+        // Convert to ObjectIds if needed (they might already be ObjectIds from .lean())
+        const objectIds = domainIds.map((id) => {
+          if (id instanceof mongoose.Types.ObjectId) return id;
+          return new mongoose.Types.ObjectId(id);
+        });
+        
+        counts = await Question.aggregate([
+          {
+            $match: {
+              domain: { $in: objectIds },
+              isActive: true,
+            },
           },
-        },
-        {
-          $group: {
-            _id: { domain: "$domain", section: "$section" },
-            count: { $sum: 1 },
+          {
+            $group: {
+              _id: { domain: "$domain", section: "$section" },
+              count: { $sum: 1 },
+            },
           },
-        },
-      ]);
+        ]);
+      } catch (aggError) {
+        // Log aggregation error but don't fail the entire request
+        logger.warn("Question count aggregation failed, using fallback", { error: aggError.message });
+        counts = [];
+      }
     }
 
     // Map counts by domainId -> { A: n, B: m }
@@ -170,8 +182,8 @@ router.get("/", auth, async (req, res) => {
 
     res.json({ domains: domainsWithCounts });
   } catch (e) {
-    logger.error("List domains error", { error: e.message });
-    res.status(500).json({ message: e.message });
+    logger.error("List domains error", { error: e.message, stack: e.stack });
+    res.status(500).json({ message: e.message || "Failed to fetch domains" });
   }
 });
 
@@ -379,19 +391,43 @@ router.get(
         testId,
       });
       const records = await StudentTest.find(filter)
-        .populate("student", "name email")
+        .populate({
+          path: "student",
+          select: "name email deletedAt disabled",
+          match: { deletedAt: null, disabled: { $ne: true } }
+        })
         .populate("test", "title")
         .lean();
 
+      logger.info("Found completed records", { count: records.length, domainId: req.params.id, testId });
+
       // Ensure one row per user per test
+      // Filter out records where student is null (soft-deleted or disabled students won't populate)
       const unique = new Map();
       for (const r of records) {
-        const key = `${r.student?._id}-${r.test?._id}`;
-        if (!unique.has(key))
-          unique.set(key, { student: r.student, test: r.test });
+        // Only include records where student and test are populated (student will be null if soft-deleted/disabled)
+        if (r.student && r.test) {
+          const key = `${r.student._id}-${r.test._id}`;
+          if (!unique.has(key)) {
+            unique.set(key, { 
+              student: { 
+                _id: r.student._id, 
+                name: r.student.name || '', 
+                email: r.student.email || '' 
+              }, 
+              test: { 
+                _id: r.test._id, 
+                title: r.test.title || '' 
+              } 
+            });
+          }
+        }
       }
 
-      res.json({ users: Array.from(unique.values()) });
+      const users = Array.from(unique.values());
+      logger.info("Returning unique completed users", { count: users.length });
+
+      res.json({ users });
     } catch (e) {
       logger.error("Fetch completed users error", { error: e.message });
       res.status(500).json({ message: e.message });
@@ -462,7 +498,7 @@ router.delete("/:id", auth, requireRole("staff"), async (req, res) => {
       domainId: req.params.id,
       user: req.user?._id,
     });
-    const domain = await Domain.findById(req.params.id);
+    const domain = await Domain.findById(req.params.id).lean();
     if (!domain) {
       logger.warn("Delete domain failed: Not found", {
         domainId: req.params.id,
@@ -471,13 +507,18 @@ router.delete("/:id", auth, requireRole("staff"), async (req, res) => {
     }
 
     // Check if user is the creator
-    if (
-      domain.createdBy &&
-      domain.createdBy.toString() !== req.user._id.toString()
-    ) {
+    // Handle both populated and non-populated createdBy
+    const createdById = domain.createdBy
+      ? domain.createdBy._id
+        ? domain.createdBy._id.toString()
+        : domain.createdBy.toString()
+      : null;
+    
+    if (createdById && createdById !== req.user._id.toString()) {
       logger.warn("Delete domain failed: Not creator", {
         domainId: req.params.id,
         user: req.user._id,
+        creatorId: createdById,
       });
       return res
         .status(403)
@@ -496,8 +537,8 @@ router.delete("/:id", auth, requireRole("staff"), async (req, res) => {
     });
     res.json({ message: "Domain deleted successfully" });
   } catch (e) {
-    logger.error("Delete domain error", { error: e.message });
-    res.status(500).json({ message: e.message });
+    logger.error("Delete domain error", { error: e.message, stack: e.stack });
+    res.status(500).json({ message: e.message || "Failed to delete domain" });
   }
 });
 

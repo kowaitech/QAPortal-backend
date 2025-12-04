@@ -92,6 +92,7 @@ router.get('/pending', async (req, res) => {
     const baseFilter = {
       isActive: false,
       disabled: { $ne: true },
+      deletedAt: null,
       role: 'staff'
     };
 
@@ -133,11 +134,20 @@ router.put('/approve/:id', async (req, res) => {
       return res.status(400).json({ message: 'Invalid user ID' });
     }
 
-    const user = await User.findByIdAndUpdate(userId, { isActive: true }, { new: true }).lean();
+    const user = await User.findById(userId);
     if (!user) {
       logger.warn('User approval failed: User not found', { userId });
       return res.status(404).json({ message: 'User not found' });
     }
+
+    // Cannot approve soft-deleted users
+    if (user.deletedAt) {
+      logger.warn('User approval failed: User is soft-deleted', { userId });
+      return res.status(400).json({ message: 'Cannot approve a deleted user. Please restore the user first.' });
+    }
+
+    user.isActive = true;
+    await user.save();
 
     logger.info('User approved successfully', { userId: user._id, userEmail: user.email, userName: user.name });
 
@@ -160,11 +170,11 @@ router.get('/registered', async (req, res) => {
     const baseFilter = includeDisabledStudents
       ? {
           $or: [
-            { role: 'student' },
-            { role: { $ne: 'student' }, isActive: true, disabled: { $ne: true } }
+            { role: 'student', deletedAt: null },
+            { role: { $ne: 'student' }, isActive: true, disabled: { $ne: true }, deletedAt: null }
           ]
         }
-      : { isActive: true, disabled: { $ne: true } };
+      : { isActive: true, disabled: { $ne: true }, deletedAt: null };
 
     if (page && limit && page > 0 && limit > 0) {
       const skip = (page - 1) * limit;
@@ -193,7 +203,7 @@ router.get('/registered', async (req, res) => {
   }
 });
 
-// Delete user (send email on deletion)
+// Delete user (soft delete for all roles)
 router.delete('/remove/:id', async (req, res) => {
   try {
     const userId = req.params.id;
@@ -210,22 +220,25 @@ router.delete('/remove/:id', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Students are soft-deleted (disabled) so their records remain
-    if (user.role === 'student') {
-      user.disabled = true;
-      user.isActive = false;
-      await user.save();
+    // All users are soft-deleted (disabled) so their records remain
+    user.disabled = true;
+    user.isActive = false;
+    user.deletedAt = new Date();
+    await user.save();
 
-      logger.info('Student disabled instead of deletion', { userId: user._id });
-      res.json({ message: 'Student access revoked' });
+    const roleMessage = user.role === 'student' 
+      ? 'Student access revoked' 
+      : user.role === 'staff' 
+        ? 'Staff access revoked' 
+        : 'Admin access revoked';
 
-      return;
-    }
-
-    await User.findByIdAndDelete(userId);
-    logger.info('User deleted successfully', { userId: user._id, userEmail: user.email, userName: user.name });
-
-    res.json({ message: 'User removed' });
+    logger.info('User soft-deleted', { 
+      userId: user._id, 
+      role: user.role,
+      deletedAt: user.deletedAt 
+    });
+    
+    res.json({ message: roleMessage, deletedAt: user.deletedAt });
 
   } catch (err) {
     logger.error('Failed to delete user', { userId: req.params.id, error: err.message });
@@ -262,13 +275,15 @@ router.put('/students/:id/status', async (req, res) => {
   }
 });
 
-// Get all students for test eligibility selection
+// Get all students for test eligibility selection (excludes soft-deleted)
 router.get('/students', async (req, res) => {
   try {
     logger.info('Fetching all active students');
     const students = await User.find({
       isActive: true,
-      role: 'student'
+      role: 'student',
+      disabled: { $ne: true },
+      deletedAt: null
     })
       .select('_id name email collegeName department yearOfPassing mobileNumber')
       .sort({ name: 1 })
@@ -278,6 +293,80 @@ router.get('/students', async (req, res) => {
     res.json({ students, count: students.length });
   } catch (err) {
     logger.error('Failed to fetch students', { error: err.message });
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Admin only: Get deleted users (for audit/restore purposes)
+router.get('/deleted', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page);
+    const limit = parseInt(req.query.limit);
+
+    logger.info('Fetching deleted users', { page, limit });
+
+    const baseFilter = {
+      deletedAt: { $ne: null }
+    };
+
+    if (page && limit && page > 0 && limit > 0) {
+      const skip = (page - 1) * limit;
+      const [users, total] = await Promise.all([
+        User.find(baseFilter)
+          .select('name email role createdAt deletedAt collegeName mobileNumber department yearOfPassing disabled isActive')
+          .sort({ deletedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        User.countDocuments(baseFilter)
+      ]);
+      logger.info('Deleted users fetched with pagination', { page, limit, returned: users.length, total });
+      return res.json({ users, page, totalPages: Math.ceil(total / limit), total });
+    }
+
+    const users = await User.find(baseFilter)
+      .select('name email role createdAt deletedAt collegeName mobileNumber department yearOfPassing disabled isActive')
+      .sort({ deletedAt: -1 })
+      .lean();
+    logger.info('All deleted users fetched', { count: users.length });
+    res.json({ users });
+  } catch (err) {
+    logger.error('Failed to fetch deleted users', { error: err.message });
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Admin only: Restore a soft-deleted user
+router.put('/restore/:id', async (req, res) => {
+  try {
+    const userId = req.params.id;
+    logger.info('Attempting to restore user', { userId });
+
+    if (!userId || userId.length !== 24) {
+      logger.warn('User restore failed: Invalid user ID format', { userId });
+      return res.status(400).json({ message: 'Invalid user ID' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      logger.warn('User restore failed: User not found', { userId });
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    if (!user.deletedAt) {
+      logger.warn('User restore failed: User is not deleted', { userId });
+      return res.status(400).json({ message: 'User is not deleted' });
+    }
+
+    user.disabled = false;
+    user.isActive = user.role === 'student' ? true : false; // Students auto-activate, staff/admin need approval
+    user.deletedAt = null;
+    await user.save();
+
+    logger.info('User restored successfully', { userId: user._id, role: user.role });
+    res.json({ message: 'User restored successfully', user });
+  } catch (err) {
+    logger.error('Failed to restore user', { userId: req.params.id, error: err.message });
     res.status(500).json({ message: err.message });
   }
 });

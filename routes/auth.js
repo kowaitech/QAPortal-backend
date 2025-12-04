@@ -290,9 +290,12 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    if (!user.isActive && user.role !== "student") {
+    // Students can always login (no approval needed)
+    // Only staff and admin need approval
+    if (user.role !== "student" && !user.isActive) {
       logger.warn("Login failed: Account not active", {
         email: normalizedEmail,
+        role: user.role,
       });
       return res
         .status(403)
@@ -370,9 +373,12 @@ router.post("/refresh", async (req, res) => {
       return res.status(401).json({ message: "User not found" });
     }
 
-    if (!user.isActive) {
+    // Students can always refresh tokens (no approval needed)
+    // Only staff and admin need approval
+    if (user.role !== "student" && !user.isActive) {
       logger.warn("Token refresh failed: Account not active", {
         userId: user._id,
+        role: user.role,
       });
       return res.status(401).json({ message: "Account not active" });
     }

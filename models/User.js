@@ -19,6 +19,7 @@ const UserSchema = new mongoose.Schema({
   role: { type: String, enum: ['admin', 'staff', 'student'], default: 'student', index: true },
   isActive: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null, index: true },
   collegeName: { type: String, trim: true },
   mobileNumber: { type: String, trim: true },
   department: { type: String, trim: true },
@@ -30,6 +31,8 @@ const UserSchema = new mongoose.Schema({
 // Performance indexes for admin pages
 UserSchema.index({ isActive: 1 });
 UserSchema.index({ isActive: 1, role: 1, createdAt: -1 });
+UserSchema.index({ deletedAt: 1 });
+UserSchema.index({ role: 1, deletedAt: 1 });
 
 // Remove sensitive fields when converting to JSON/Object
 UserSchema.set('toJSON', {
