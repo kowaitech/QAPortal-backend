@@ -128,7 +128,7 @@ router.get("/", auth, async (req, res) => {
           if (id instanceof mongoose.Types.ObjectId) return id;
           return new mongoose.Types.ObjectId(id);
         });
-        
+
         counts = await Question.aggregate([
           {
             $match: {
@@ -145,7 +145,9 @@ router.get("/", auth, async (req, res) => {
         ]);
       } catch (aggError) {
         // Log aggregation error but don't fail the entire request
-        logger.warn("Question count aggregation failed, using fallback", { error: aggError.message });
+        logger.warn("Question count aggregation failed, using fallback", {
+          error: aggError.message,
+        });
         counts = [];
       }
     }
@@ -276,8 +278,10 @@ router.get("/:id/answers", auth, requireRole("staff"), async (req, res) => {
     if (testId) findFilter.test = testId;
 
     // Use aggregation to group answers by student and separate sections (more efficient)
-    const matchStage = { domain: mongoose.Types.ObjectId(req.params.id) };
-    if (testId) matchStage.test = mongoose.Types.ObjectId(testId);
+    const matchStage = { domain: new mongoose.Types.ObjectId(req.params.id) };
+    if (testId && mongoose.Types.ObjectId.isValid(testId)) {
+      matchStage.test = new mongoose.Types.ObjectId(testId);
+    }
 
     const pipeline = [
       { $match: matchStage },
@@ -314,9 +318,12 @@ router.get("/:id/answers", auth, requireRole("staff"), async (req, res) => {
               mark: "$mark",
               answerText: "$answerText",
               submittedAt: "$submittedAt",
+              updatedAt: "$updatedAt",
+              createdAt: "$createdAt",
               test: "$test",
               examStartTime: "$examStartTime",
               examEndTime: "$examEndTime",
+              markSubmitted: { $cond: [{ $ne: ["$mark", null] }, true, false] },
             },
           },
           totalMark: { $sum: { $ifNull: ["$mark", 0] } },
@@ -349,10 +356,22 @@ router.get("/:id/answers", auth, requireRole("staff"), async (req, res) => {
     ];
 
     const aggResults = await StudentAnswer.aggregate(pipeline);
+    logger.info("Domain answers fetched successfully", {
+      domainId: req.params.id,
+      testId: testId || "all",
+      count: aggResults.length,
+      user: req.user?._id,
+    });
     res.json({ answers: aggResults });
   } catch (e) {
-    logger.error("Fetch domain answers error", { error: e.message });
-    res.status(500).json({ message: e.message });
+    logger.error("Fetch domain answers error", {
+      error: e.message,
+      stack: e.stack,
+      domainId: req.params.id,
+      testId: req.query.testId,
+      user: req.user?._id,
+    });
+    res.status(500).json({ message: e.message || "Failed to fetch answers" });
   }
 });
 
@@ -394,12 +413,16 @@ router.get(
         .populate({
           path: "student",
           select: "name email deletedAt disabled",
-          match: { deletedAt: null, disabled: { $ne: true } }
+          match: { deletedAt: null, disabled: { $ne: true } },
         })
         .populate("test", "title")
         .lean();
 
-      logger.info("Found completed records", { count: records.length, domainId: req.params.id, testId });
+      logger.info("Found completed records", {
+        count: records.length,
+        domainId: req.params.id,
+        testId,
+      });
 
       // Ensure one row per user per test
       // Filter out records where student is null (soft-deleted or disabled students won't populate)
@@ -409,16 +432,16 @@ router.get(
         if (r.student && r.test) {
           const key = `${r.student._id}-${r.test._id}`;
           if (!unique.has(key)) {
-            unique.set(key, { 
-              student: { 
-                _id: r.student._id, 
-                name: r.student.name || '', 
-                email: r.student.email || '' 
-              }, 
-              test: { 
-                _id: r.test._id, 
-                title: r.test.title || '' 
-              } 
+            unique.set(key, {
+              student: {
+                _id: r.student._id,
+                name: r.student.name || "",
+                email: r.student.email || "",
+              },
+              test: {
+                _id: r.test._id,
+                title: r.test.title || "",
+              },
             });
           }
         }
@@ -513,7 +536,7 @@ router.delete("/:id", auth, requireRole("staff"), async (req, res) => {
         ? domain.createdBy._id.toString()
         : domain.createdBy.toString()
       : null;
-    
+
     if (createdById && createdById !== req.user._id.toString()) {
       logger.warn("Delete domain failed: Not creator", {
         domainId: req.params.id,
