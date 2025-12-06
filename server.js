@@ -28,9 +28,6 @@ const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
       process.env.CLIENT_ORIGIN || "http://localhost:5173",
-      "https://qaportal-1.onrender.com",
-      "https://qaportal.onrender.com",
-      "https://qaportal-backend-iyjk.onrender.com",
       "https://qa-portal-puce.vercel.app",
       "https://ortal-backend-kowaitech3639-kzrf4tdf.leapcell.dev",
     ];
