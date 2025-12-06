@@ -32,7 +32,7 @@ const corsOptions = {
       "https://qaportal.onrender.com",
       "https://qaportal-backend-iyjk.onrender.com",
       "https://qa-portal-puce.vercel.app",
-      "https://ortal-backend-kowaitech3639-kzrf4tdf.leapcell.dev,
+      "https://ortal-backend-kowaitech3639-kzrf4tdf.leapcell.dev",
     ];
 
     // Allow requests with no origin (like mobile apps or curl requests)
